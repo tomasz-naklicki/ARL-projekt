@@ -47,7 +47,7 @@
 #include "sound.h"
 #include "filter.h"
 #include "i2cdev.h"
-#include "bmi088.h"
+#include "bmi08x.h"
 #include "bmp3.h"
 #include "bstdr_types.h"
 #include "static_mem.h"
@@ -65,7 +65,7 @@
 #define SENSORS_DELAY_BARO              (SENSORS_READ_RATE_HZ/SENSORS_READ_BARO_HZ)
 #define SENSORS_DELAY_MAG               (SENSORS_READ_RATE_HZ/SENSORS_READ_MAG_HZ)
 
-#define SENSORS_BMI088_GYRO_FS_CFG      BMI088_GYRO_RANGE_2000_DPS
+#define SENSORS_BMI088_GYRO_FS_CFG      BMI08_GYRO_RANGE_2000_DPS
 #define SENSORS_BMI088_DEG_PER_LSB_CFG  (2.0f *2000.0f) / 65536.0f
 
 #define SENSORS_BMI088_ACCEL_CFG        24
@@ -103,7 +103,7 @@ typedef struct
 } BiasObj;
 
 /* initialize necessary variables */
-static struct bmi088_dev bmi088Dev;
+static struct bmi08_dev bmi088Dev;
 static struct bmp3_dev   bmp388Dev;
 
 static xQueueHandle accelerometerDataQueue;
@@ -185,12 +185,13 @@ STATIC_MEM_TASK_ALLOC(sensorsTask, SENSORS_TASK_STACKSIZE);
  *
  * @return Zero if successful, otherwise an error code
  */
-bstdr_ret_t bmi088_burst_read(uint8_t dev_id, uint8_t reg_addr, uint8_t *reg_data, uint16_t len)
+BMI08_INTF_RET_TYPE bmi088_burst_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t len, void *intf_ptr)
 {
   /**< Burst read code comes here */
-  if (i2cdevReadReg8(I2C3_DEV, dev_id, reg_addr, (uint16_t) len, reg_data))
+  uint8_t device_addr = *(uint8_t*)intf_ptr;
+  if (i2cdevReadReg8(I2C3_DEV, device_addr, reg_addr, (uint16_t) len, reg_data))
   {
-    return BSTDR_OK;
+    return BMI08_OK;
   }
   else
   {
@@ -205,10 +206,11 @@ bstdr_ret_t bmi088_burst_read(uint8_t dev_id, uint8_t reg_addr, uint8_t *reg_dat
  *
  * @return Zero if successful, otherwise an error code
  */
-bstdr_ret_t bmi088_burst_write(uint8_t dev_id, uint8_t reg_addr, uint8_t *reg_data, uint16_t len)
+BMI08_INTF_RET_TYPE bmi088_burst_write(uint8_t reg_addr, const uint8_t *reg_data, uint32_t len, void *intf_ptr)
 {
   /**< Burst write code comes here */
-  if (i2cdevWriteReg8(I2C3_DEV, dev_id,reg_addr,(uint16_t) len, reg_data))
+  uint8_t device_addr = *(uint8_t*)intf_ptr;
+  if (i2cdevWriteReg8(I2C3_DEV, device_addr, reg_addr, (uint16_t) len, reg_data))
   {
     return BSTDR_OK;
   }
@@ -221,24 +223,47 @@ bstdr_ret_t bmi088_burst_write(uint8_t dev_id, uint8_t reg_addr, uint8_t *reg_da
 /*!
  * @brief Generic burst read
  *
- * @param [in] period Delay period in milliseconds
+ * @param [in] period Delay period in microseconds
  *
  * @return None
  */
-void bmi088_ms_delay(uint32_t period)
+void bmi088_us_delay(uint32_t period, void *intf_ptr)
 {
+  (void)intf_ptr;
   /**< Delay code comes */
-  vTaskDelay(M2T(period)); // Delay a while to let the device stabilize
+  uint32_t milisecond_period = period / 1000;
+  // but minimal delay is 1ms
+  if (milisecond_period < 1)
+  {
+    milisecond_period = 1;
+  }
+  vTaskDelay(M2T(milisecond_period)); // Delay a while to let the device stabilize.
+  // todo; check this period
 }
 
 static uint16_t sensorsGyroGet(Axis3i16* dataOut)
 {
-  return bmi088_get_gyro_data((struct bmi088_sensor_data*)dataOut, &bmi088Dev);
+  int8_t result;
+  result = bmi08g_get_data((struct bmi08_sensor_data*)dataOut, &bmi088Dev);
+  if (result == BMI08_OK) {
+    DEBUG_PRINT("Got gyro data [OK]\n");
+  }
+  else {
+    DEBUG_PRINT("Got gyro data [FAIL]\n");
+  }
+  return result;
 }
 
 static void sensorsAccelGet(Axis3i16* dataOut)
 {
-  bmi088_get_accel_data((struct bmi088_sensor_data*)dataOut, &bmi088Dev);
+  int8_t result;
+  result = bmi08a_get_data((struct bmi08_sensor_data*)dataOut, &bmi088Dev);
+  if (result == BMI08_OK) {
+    DEBUG_PRINT("Got accel data [OK]\n");
+  }
+  else {
+    DEBUG_PRINT("Got accel data [FAIL]\n");
+  }
 }
 
 static void sensorsScaleBaro(baro_t* baroScaled, float pressure,
@@ -252,6 +277,7 @@ static void sensorsScaleBaro(baro_t* baroScaled, float pressure,
 
 bool sensorsBmi088Bmp388ReadGyro(Axis3f *gyro)
 {
+
   return (pdTRUE == xQueueReceive(gyroDataQueue, gyro, 0));
 }
 
@@ -298,13 +324,19 @@ static void sensorsTask(void *param)
   //vTaskDelayUntil(&lastWakeTime, M2T(1500));
   while (1)
   {
+    DEBUG_PRINT("sensorTaskPulse\n");
+    
     if (pdTRUE == xSemaphoreTake(sensorsDataReady, portMAX_DELAY))
     {
+    // vTaskDelay(M2T(1));
+      // ASSERT(0);
       sensorData.interruptTimestamp = imuIntTimestamp;
 
       /* get data from chosen sensors */
       sensorsGyroGet(&gyroRaw);
       sensorsAccelGet(&accelRaw);
+      DEBUG_PRINT("BMI088 Accel: x=%d y=%d z=%d\n", accelRaw.x, accelRaw.y, accelRaw.z);
+      DEBUG_PRINT("BMI088 Gyro: x=%d y=%d z=%d\n", gyroRaw.x, gyroRaw.y, gyroRaw.z);
 
       /* calibrate if necessary */
 #ifdef GYRO_BIAS_LIGHT_WEIGHT
@@ -340,7 +372,7 @@ static void sensorsTask(void *param)
       measurement.data.acceleration.acc = sensorData.acc;
       estimatorEnqueue(&measurement);
     }
-
+    // DEBUG_PRINT("sensorTaskPulseEnd\n");
     if (isBarometerPresent)
     {
       static uint8_t baroMeasDelay = SENSORS_DELAY_BARO;
@@ -360,6 +392,7 @@ static void sensorsTask(void *param)
         baroMeasDelay = baroMeasDelayMin;
       }
     }
+    // DEBUG_PRINT("pastBarometer\n");
     xQueueOverwrite(accelerometerDataQueue, &sensorData.acc);
     xQueueOverwrite(gyroDataQueue, &sensorData.gyro);
     if (isBarometerPresent)
@@ -376,6 +409,25 @@ void sensorsBmi088Bmp388WaitDataReady(void)
   xSemaphoreTake(dataReady, portMAX_DELAY);
 }
 
+// static double lsb_to_mps2(int16_t val, int8_t g_range, uint8_t bit_width)
+// {
+//     double power = 2;
+
+//     double half_scale = ((pow((double)power, (double)bit_width) / 2.0));
+
+//     return (9.81 * val * g_range) / half_scale;
+// }
+
+// static double lsb_to_dps(int16_t val, float dps, uint8_t bit_width)
+// {
+//     double power = 2;
+
+//     double half_scale = ((pow((double)power, (double)bit_width) / 2.0));
+
+//     return ((double)dps / (half_scale)) * (val);
+// }
+
+
 static void sensorsDeviceInit(void)
 {
   if (isInit)
@@ -391,83 +443,307 @@ static void sensorsDeviceInit(void)
    * The bmi088Dev structure should have been filled in by the backend
    * (i2c/spi) drivers at this point.
   */
+  // bmi088Dev.variant = (enum bmi08_variant)BMI088_VARIANT;
+  rslt = bmi08xa_init(&bmi088Dev);
+  // rslt = bmi08a_init(&bmi088Dev);
+  rslt = BMI08_OK;
 
-  /* BMI088 GYRO */
-  rslt = bmi088_gyro_init(&bmi088Dev); // initialize the device
-  if (rslt == BSTDR_OK)
+  if (rslt == BMI08_OK)
   {
-    struct bmi088_int_cfg intConfig;
+      rslt |= bmi08g_init(&bmi088Dev);
+  }
 
-    DEBUG_PRINT("BMI088 Gyro connection [OK].\n");
-    /* set power mode of gyro */
-    bmi088Dev.gyro_cfg.power = BMI088_GYRO_PM_NORMAL;
-    rslt |= bmi088_set_gyro_power_mode(&bmi088Dev);
-    /* set bandwidth and range of gyro */
-    bmi088Dev.gyro_cfg.bw = BMI088_GYRO_BW_116_ODR_1000_HZ;
-    bmi088Dev.gyro_cfg.range = SENSORS_BMI088_GYRO_FS_CFG;
-    bmi088Dev.gyro_cfg.odr = BMI088_GYRO_BW_116_ODR_1000_HZ;
-    rslt |= bmi088_set_gyro_meas_conf(&bmi088Dev);
+  if (rslt == BMI08_OK)
+  {
+      rslt |= bmi08a_load_config_file(&bmi088Dev);
+  }
 
-    intConfig.gyro_int_channel = BMI088_INT_CHANNEL_3;
-    intConfig.gyro_int_type = BMI088_GYRO_DATA_RDY_INT;
-    intConfig.gyro_int_pin_3_cfg.enable_int_pin = 1;
-    intConfig.gyro_int_pin_3_cfg.lvl = 1;
-    intConfig.gyro_int_pin_3_cfg.output_mode = 0;
-    /* Setting the interrupt configuration */
-    rslt = bmi088_set_gyro_int_config(&intConfig, &bmi088Dev);
+  if (rslt == BMI08_OK)
+  {
+    bmi088Dev.accel_cfg.odr = BMI08_ACCEL_ODR_1600_HZ;
 
-    bmi088Dev.delay_ms(50);
-    struct bmi088_sensor_data gyr;
-    rslt |= bmi088_get_gyro_data(&gyr, &bmi088Dev);
+    if (bmi088Dev.variant == BMI085_VARIANT)
+    {
+        bmi088Dev.accel_cfg.range = BMI085_ACCEL_RANGE_16G;
+    }
+    else if (bmi088Dev.variant == BMI088_VARIANT)
+    {
+        bmi088Dev.accel_cfg.range = BMI088_ACCEL_RANGE_24G;
+    }
+    DEBUG_PRINT("Variant: %d\n", bmi088Dev.variant);
+
+    bmi088Dev.accel_cfg.power = BMI08_ACCEL_PM_ACTIVE; /*user_accel_power_modes[user_bmi088_accel_low_power]; */
+    // bmi088Dev.accel_cfg.bw = BMI08_ACCEL_BW_NORMAL; /* Bandwidth and OSR are same */
+    bmi088Dev.accel_cfg.bw = BMI08_ACCEL_BW_OSR4;
+
+    rslt |= bmi08a_set_power_mode(&bmi088Dev);
+    // //bmi08_error_codes_print_result("bmi08a_set_power_mode", rslt);
+
+    rslt |= bmi08xa_set_meas_conf(&bmi088Dev);
+    // //bmi08_error_codes_print_result("bmi08xa_set_meas_conf", rslt);
+
+    bmi088Dev.gyro_cfg.odr = BMI08_GYRO_BW_116_ODR_1000_HZ;
+    bmi088Dev.gyro_cfg.range = BMI08_GYRO_RANGE_2000_DPS;
+    bmi088Dev.gyro_cfg.bw = BMI08_GYRO_BW_116_ODR_1000_HZ;
+    bmi088Dev.gyro_cfg.power = BMI08_GYRO_PM_NORMAL;
+
+    rslt |= bmi08g_set_power_mode(&bmi088Dev);
+    // //bmi08_error_codes_print_result("bmi08g_set_power_mode", rslt);
+
+    rslt |= bmi08g_set_meas_conf(&bmi088Dev);
+    // //bmi08_error_codes_print_result("bmi08g_set_meas_conf", rslt);
+  }
+
+  if (rslt == BMI08_OK)
+  {
+    DEBUG_PRINT("BMI088 connection [OK]\n");
+    isInit = true;
   }
   else
   {
-#ifndef SENSORS_IGNORE_IMU_FAIL
-    DEBUG_PRINT("BMI088 Gyro connection [FAIL]\n");
+    DEBUG_PRINT("BMI088 connection [FAIL]\n");
     isInit = false;
-#endif
+    return;
   }
 
-  /* BMI088 ACCEL */
-  rslt |= bmi088_accel_switch_control(&bmi088Dev, BMI088_ACCEL_POWER_ENABLE);
-  bmi088Dev.delay_ms(5);
+  // interrupt
+  uint8_t data = 0;
 
-  rslt = bmi088_accel_init(&bmi088Dev); // initialize the device
-  if (rslt == BSTDR_OK)
+  // /*! bmi08 accel int config */
+  // struct bmi08_accel_int_channel_cfg accel_int_config;
+
+  /*! bmi08 gyro int config */
+  struct bmi08_gyro_int_channel_cfg gyro_int_config;
+
+  // /* Set accel interrupt pin configuration */
+  // accel_int_config.int_channel = BMI08_INT_CHANNEL_1;
+  // accel_int_config.int_type = BMI08_ACCEL_INT_DATA_RDY;
+  // accel_int_config.int_pin_cfg.output_mode = BMI08_INT_MODE_PUSH_PULL;
+  // accel_int_config.int_pin_cfg.lvl = BMI08_INT_ACTIVE_HIGH;
+  // accel_int_config.int_pin_cfg.enable_int_pin = BMI08_ENABLE;
+
+  // /* Enable accel data ready interrupt channel */
+  // rslt = bmi08a_set_int_config((const struct bmi08_accel_int_channel_cfg*)&accel_int_config, &bmi088Dev);
+
+  if (rslt == BMI08_OK)
   {
-    DEBUG_PRINT("BMI088 Accel connection [OK]\n");
-    /* set power mode of accel */
-    bmi088Dev.accel_cfg.power = BMI088_ACCEL_PM_ACTIVE;
-    rslt |= bmi088_set_accel_power_mode(&bmi088Dev);
-    bmi088Dev.delay_ms(10);
+      /* Set gyro interrupt pin configuration */
+      gyro_int_config.int_channel = BMI08_INT_CHANNEL_3;
+      gyro_int_config.int_type = BMI08_GYRO_INT_DATA_RDY;
+      gyro_int_config.int_pin_cfg.output_mode = BMI08_INT_MODE_PUSH_PULL;
+      gyro_int_config.int_pin_cfg.lvl = BMI08_INT_ACTIVE_HIGH;
+      gyro_int_config.int_pin_cfg.enable_int_pin = BMI08_ENABLE;
 
-    /* set bandwidth and range of accel */
-    bmi088Dev.accel_cfg.bw = BMI088_ACCEL_BW_OSR4;
-    bmi088Dev.accel_cfg.range = SENSORS_BMI088_ACCEL_FS_CFG;
-    bmi088Dev.accel_cfg.odr = BMI088_ACCEL_ODR_1600_HZ;
-    rslt |= bmi088_set_accel_meas_conf(&bmi088Dev);
+      /* Enable gyro data ready interrupt channel */
+      rslt |= bmi08g_set_int_config((const struct bmi08_gyro_int_channel_cfg *)&gyro_int_config, &bmi088Dev);
 
-    struct bmi088_sensor_data acc;
-    rslt |= bmi088_get_accel_data(&acc, &bmi088Dev);
+      rslt |= bmi08g_get_regs(BMI08_REG_GYRO_INT3_INT4_IO_MAP, &data, 1, &bmi088Dev);
+  }
+
+  if (rslt == BMI08_OK)
+  {
+    DEBUG_PRINT("BMI088 interrupt configuration [OK]\n");
   }
   else
   {
-#ifndef SENSORS_IGNORE_IMU_FAIL
-    DEBUG_PRINT("BMI088 Accel connection [FAIL]\n");
+    DEBUG_PRINT("BMI088 interrupt configuration [FAIL]\n");
     isInit = false;
-#endif
+    return;
   }
+
+  // // do some tests
+  // uint8_t times_to_read = 0;
+  // double x = 0.0, y = 0.0, z = 0.0;
+  // uint8_t status = 0;
+  // /*! @brief variable to hold the bmi08 accel data */
+  // struct bmi08_sensor_data bmi08_accel;
+
+  // /*! @brief variable to hold the bmi08 gyro data */
+  // struct bmi08_sensor_data bmi08_gyro;
+
+  // if (rslt == BMI08_OK)
+  // {
+  //     if (bmi088Dev.accel_cfg.power == BMI08_ACCEL_PM_ACTIVE)
+  //     {
+  //         DEBUG_PRINT("\nACCEL DATA\n");
+  //         DEBUG_PRINT("Accel data in LSB units and Gravity data in m/s^2\n");
+  //         DEBUG_PRINT("Accel data range : 16G for BMI085 and 24G for BMI088\n\n");
+
+  //         DEBUG_PRINT("Sample_Count, Acc_Raw_X, Acc_Raw_Y, Acc_Raw_Z, Acc_ms2_X, Acc_ms2_Y, Acc_ms2_Z\n");
+
+  //         while (times_to_read < 10)
+  //         {
+  //             rslt = bmi08a_get_data_int_status(&status, &bmi088Dev);
+  //             //bmi08_error_codes_print_result("bmi08a_get_data_int_status", rslt);
+
+  //             if (status & BMI08_ACCEL_DATA_READY_INT)
+  //             {
+  //                 rslt = bmi08a_get_data(&bmi08_accel, &bmi088Dev);
+  //                 //bmi08_error_codes_print_result("bmi08a_get_data", rslt);
+
+  //                 if (bmi088Dev.variant == BMI085_VARIANT)
+  //                 {
+  //                     /* Converting lsb to meter per second squared for 16 bit accelerometer at 16G range. */
+  //                     x = lsb_to_mps2(bmi08_accel.x, 16, 16);
+  //                     y = lsb_to_mps2(bmi08_accel.y, 16, 16);
+  //                     z = lsb_to_mps2(bmi08_accel.z, 16, 16);
+  //                 }
+  //                 else if (bmi088Dev.variant == BMI088_VARIANT)
+  //                 {
+  //                     /* Converting lsb to meter per second squared for 16 bit accelerometer at 24G range. */
+  //                     x = lsb_to_mps2(bmi08_accel.x, 24, 16);
+  //                     y = lsb_to_mps2(bmi08_accel.y, 24, 16);
+  //                     z = lsb_to_mps2(bmi08_accel.z, 24, 16);
+  //                 }
+
+  //                 DEBUG_PRINT("%d, %5d, %5d, %5d, %4.2f, %4.2f, %4.2f\n",
+  //                         times_to_read,
+  //                         bmi08_accel.x,
+  //                         bmi08_accel.y,
+  //                         bmi08_accel.z,
+  //                         x,
+  //                         y,
+  //                         z);
+
+  //                 times_to_read = times_to_read + 1;
+  //                 vTaskDelay(M2T(10));
+  //             }
+  //         }
+  //     }
+
+  //     if (bmi088Dev.gyro_cfg.power == BMI08_GYRO_PM_NORMAL)
+  //     {
+  //         times_to_read = 0;
+
+  //         DEBUG_PRINT("\n\nGYRO DATA\n");
+  //         DEBUG_PRINT("Gyro data in LSB units and degrees per second\n");
+  //         DEBUG_PRINT("Gyro data range : 250 dps for BMI085 and BMI088\n\n");
+
+  //         DEBUG_PRINT("Sample_Count, Gyr_Raw_X, Gyr_Raw_Y, Gyr_Raw_Z, Gyr_DPS_X, Gyr_DPS_Y, Gyr_DPS_Z\n");
+
+  //         while (times_to_read < 10)
+  //         {
+  //             rslt = bmi08g_get_data_int_status(&status, &bmi088Dev);
+  //             //bmi08_error_codes_print_result("bmi08g_get_data_int_status", rslt);
+
+  //             if (status & BMI08_GYRO_DATA_READY_INT)
+  //             {
+  //                 rslt = bmi08g_get_data(&bmi08_gyro, &bmi088Dev);
+  //                 //bmi08_error_codes_print_result("bmi08g_get_data", rslt);
+
+  //                 /* Converting lsb to degree per second for 16 bit gyro at 250 dps range. */
+  //                 x = lsb_to_dps(bmi08_gyro.x, (float)250, 16);
+  //                 y = lsb_to_dps(bmi08_gyro.y, (float)250, 16);
+  //                 z = lsb_to_dps(bmi08_gyro.z, (float)250, 16);
+
+  //                 DEBUG_PRINT("%d, %5d, %5d, %5d, %4.2f, %4.2f, %4.2f\n",
+  //                         times_to_read,
+  //                         bmi08_gyro.x,
+  //                         bmi08_gyro.y,
+  //                         bmi08_gyro.z,
+  //                         x,
+  //                         y,
+  //                         z);
+
+  //                 times_to_read = times_to_read + 1;
+  //                 vTaskDelay(M2T(10));
+  //             }
+  //         }
+  //     }
+  // }
+
+//   /* BMI088 GYRO */
+//   rslt = bmi08g_init(&bmi088Dev); // initialize the device
+//   if (rslt == BSTDR_OK)
+//   {
+//     struct bmi08_gyro_int_channel_cfg intConfig;
+
+//     DEBUG_PRINT("BMI088 Gyro connection [OK].\n");
+//     /* set power mode of gyro */
+//     bmi088Dev.gyro_cfg.power = BMI08_GYRO_PM_NORMAL;
+//     /* set bandwidth and range of gyro */
+//     bmi088Dev.gyro_cfg.bw = BMI08_GYRO_BW_116_ODR_1000_HZ;
+//     bmi088Dev.gyro_cfg.range = SENSORS_BMI088_GYRO_FS_CFG;
+//     bmi088Dev.gyro_cfg.odr = BMI08_GYRO_BW_116_ODR_1000_HZ;
+//     rslt |= bmi08g_set_power_mode(&bmi088Dev);
+//     rslt |= bmi08g_set_meas_conf(&bmi088Dev);
+
+//     intConfig.int_channel = BMI08_INT_CHANNEL_3;
+//     intConfig.int_type = BMI08_GYRO_INT_DATA_RDY;
+//     intConfig.int_pin_cfg.enable_int_pin = BMI08_ENABLE;
+//     intConfig.int_pin_cfg.lvl = BMI08_INT_ACTIVE_HIGH;
+//     intConfig.int_pin_cfg.output_mode = BMI08_INT_MODE_PUSH_PULL;
+//     /* Setting the interrupt configuration */
+//     rslt = bmi08g_set_int_config(&intConfig, &bmi088Dev);
+//     if (rslt != BSTDR_OK)
+//     {
+//       DEBUG_PRINT("BMI088 Gyro interrupt configuration [FAIL]\n");
+//     }
+//     else {
+//       DEBUG_PRINT("BMI088 Gyro interrupt configuration [OK]\n");
+    
+//     }
+
+//     bmi088Dev.delay_us(50000, bmi088Dev.intf_ptr_gyro);
+//     struct bmi08_sensor_data gyr;
+//     rslt |= bmi08g_get_data(&gyr, &bmi088Dev);
+//   }
+//   else
+//   {
+// #ifndef SENSORS_IGNORE_IMU_FAIL
+//     DEBUG_PRINT("RESULT: %d\n", rslt);
+//     DEBUG_PRINT("BMI088 Gyro connection [FAIL]\n");
+//     isInit = false;
+// #endif
+//   }
+
+//   /* BMI088 ACCEL */
+//   // rslt |= bmi08a_switch_control(&bmi088Dev, BMI08_ACCEL_POWER_ENABLE); // this is set below in cfg power
+//   bmi088Dev.delay_us(5000, bmi088Dev.intf_ptr_accel);
+
+//   // bmi088Dev.variant = (enum bmi08_variant)BMI088_VARIANT;
+//   // rslt = bmi08xa_init(&bmi088Dev); // initialize the device
+//   rslt |= bmi08a_init(&bmi088Dev); // initialize the device
+//   rslt |= bmi08a_load_config_file(&bmi088Dev);
+//   if (rslt == BSTDR_OK)
+//   {
+//     DEBUG_PRINT("BMI088 Accel connection [OK]\n");
+//     /* set power mode of accel */
+//     bmi088Dev.accel_cfg.power = BMI08_ACCEL_PM_ACTIVE;
+//     bmi088Dev.delay_us(10000, bmi088Dev.intf_ptr_accel);
+
+//     /* set bandwidth and range of accel */
+//     bmi088Dev.accel_cfg.bw = BMI08_ACCEL_BW_OSR4;
+//     bmi088Dev.accel_cfg.range = SENSORS_BMI088_ACCEL_FS_CFG;
+//     bmi088Dev.accel_cfg.odr = BMI08_ACCEL_ODR_1600_HZ;
+//     rslt |= bmi08a_set_power_mode(&bmi088Dev);
+//     rslt |= bmi08a_set_meas_conf(&bmi088Dev);
+//     rslt |= bmi08xa_set_meas_conf(&bmi088Dev);
+
+//     struct bmi08_sensor_data acc;
+//     rslt |= bmi08a_get_data(&acc, &bmi088Dev);
+//     DEBUG_PRINT("BMI088 Accel: x=%d y=%d z=%d\n", acc.x, acc.y, acc.z);
+//   }
+//   else
+//   {
+// #ifndef SENSORS_IGNORE_IMU_FAIL
+//     DEBUG_PRINT("BMI088 Accel connection [FAIL]\n");
+//     isInit = false;
+// #endif
+//   }
 
   /* BMP388 */
-  bmp388Dev.dev_id = BMP3_I2C_ADDR_SEC;
+  uint8_t intf;
+  intf = (unsigned char) BMP3_ADDR_I2C_SEC;
+  bmp388Dev.intf_ptr = &intf;
   bmp388Dev.intf = BMP3_I2C_INTF;
   bmp388Dev.read = bmi088_burst_read;
   bmp388Dev.write = bmi088_burst_write;
-  bmp388Dev.delay_ms = bmi088_ms_delay;
+  bmp388Dev.delay_us = bmi088_us_delay; // todo; verify this is correct
 
   int i = 3;
   do {
-    bmp388Dev.delay_ms(1);
+    bmp388Dev.delay_us(1000, bmp388Dev.intf_ptr);
     // For some reason it often doesn't work first time
     rslt = bmp3_init(&bmp388Dev);
   } while (rslt != BMP3_OK && i-- > 0);
@@ -479,23 +755,24 @@ static void sensorsDeviceInit(void)
     /* Used to select the settings user needs to change */
     uint16_t settings_sel;
     /* Select the pressure and temperature sensor to be enabled */
-    bmp388Dev.settings.press_en = BMP3_ENABLE;
-    bmp388Dev.settings.temp_en = BMP3_ENABLE;
+    struct bmp3_settings settings = { 0 };
+    settings.press_en = BMP3_ENABLE;
+    settings.temp_en = BMP3_ENABLE;
     /* Select the output data rate and oversampling settings for pressure and temperature */
-    bmp388Dev.settings.odr_filter.press_os = BMP3_OVERSAMPLING_8X;
-    bmp388Dev.settings.odr_filter.temp_os = BMP3_NO_OVERSAMPLING;
-    bmp388Dev.settings.odr_filter.odr = BMP3_ODR_50_HZ;
-    bmp388Dev.settings.odr_filter.iir_filter = BMP3_IIR_FILTER_COEFF_3;
+    settings.odr_filter.press_os = BMP3_OVERSAMPLING_8X;
+    settings.odr_filter.temp_os = BMP3_NO_OVERSAMPLING;
+    settings.odr_filter.odr = BMP3_ODR_50_HZ;
+    settings.odr_filter.iir_filter = BMP3_IIR_FILTER_COEFF_3;
     /* Assign the settings which needs to be set in the sensor */
-    settings_sel = BMP3_PRESS_EN_SEL | BMP3_TEMP_EN_SEL | BMP3_PRESS_OS_SEL | BMP3_TEMP_OS_SEL | BMP3_ODR_SEL | BMP3_IIR_FILTER_SEL;
-    rslt = bmp3_set_sensor_settings(settings_sel, &bmp388Dev);
+    settings_sel = BMP3_SEL_PRESS_EN | BMP3_SEL_TEMP_EN | BMP3_SEL_PRESS_OS | BMP3_SEL_TEMP_OS | BMP3_SEL_ODR | BMP3_SEL_IIR_FILTER;
+    rslt = bmp3_set_sensor_settings(settings_sel, &settings, &bmp388Dev);
 
     /* Set the power mode to normal mode */
-    bmp388Dev.settings.op_mode = BMP3_NORMAL_MODE;
-    rslt = bmp3_set_op_mode(&bmp388Dev);
+    settings.op_mode = BMP3_MODE_NORMAL;
+    rslt = bmp3_set_op_mode(&settings, &bmp388Dev);
 
 
-    bmp388Dev.delay_ms(20); // wait before first read out
+    bmp388Dev.delay_us(20000, bmp388Dev.intf_ptr); // wait before first read out
     // read out data
     /* Variable used to select the sensor component */
     uint8_t sensor_comp;
@@ -508,7 +785,7 @@ static void sensorsDeviceInit(void)
     rslt = bmp3_get_sensor_data(sensor_comp, &data, &bmp388Dev);
 
     /* Print the temperature and pressure data */
-//    DEBUG_PRINT("BMP388 T:%0.2f  P:%0.2f\n",data.temperature, data.pressure/100.0f);
+    DEBUG_PRINT("BMP388 T:%0.2f  P:%0.2f\n",data.temperature, data.pressure/100.0);
     baroMeasDelayMin = SENSORS_DELAY_BARO;
   }
   else
@@ -608,21 +885,21 @@ static bool gyroSelftest()
   bool testStatus = true;
 
   int i = 3;
-  uint16_t readResult = BMI088_OK;
+  uint16_t readResult = BMI08_OK;
   do {
     // For some reason it often doesn't work first time on the Roadrunner
     readResult = sensorsGyroGet(&gyroRaw);
-  } while (readResult != BMI088_OK && i-- > 0);
+  } while (readResult != BMI08_OK && i-- > 0);
 
-  if ((readResult != BMI088_OK) || (gyroRaw.x == 0 && gyroRaw.y == 0 && gyroRaw.z == 0))
+  if ((readResult != BMI08_OK) || (gyroRaw.x == 0 && gyroRaw.y == 0 && gyroRaw.z == 0))
   {
     DEBUG_PRINT("BMI088 gyro returning x=0 y=0 z=0 [FAILED]\n");
     testStatus = false;
   }
-
+  
   int8_t gyroResult = 0;
-  bmi088_perform_gyro_selftest(&gyroResult, &bmi088Dev);
-  if (gyroResult == BMI088_SELFTEST_PASS)
+  gyroResult = bmi08g_perform_selftest(&bmi088Dev);
+  if (gyroResult == BMI08_OK)
   {
     DEBUG_PRINT("BMI088 gyro self-test [OK]\n");
   }
@@ -661,7 +938,7 @@ static bool processAccScale(int16_t ax, int16_t ay, int16_t az)
 {
   if (!accScaleFound)
   {
-    accScaleSum += sqrtf(powf(ax * SENSORS_BMI088_G_PER_LSB_CFG, 2) + powf(ay * SENSORS_BMI088_G_PER_LSB_CFG, 2) + powf(az * SENSORS_BMI088_G_PER_LSB_CFG, 2));
+    accScaleSum += sqrtf(powf(ax * SENSORS_BMI088_G_PER_LSB_CFG, 2) + powf(ay * SENSORS_BMI088_G_PER_LSB_CFG, 2) + powf(az * SENSORS_BMI088_G_PER_LSB_CFG, 2));  // todo; review if this needs an update
     accScaleSumCount++;
 
     if (accScaleSumCount == SENSORS_ACC_SCALE_SAMPLES)
@@ -742,7 +1019,7 @@ static bool processGyroBias(int16_t gx, int16_t gy, int16_t gz, Axis3f *gyroBias
   gyroBiasOut->x = gyroBiasRunning.bias.x;
   gyroBiasOut->y = gyroBiasRunning.bias.y;
   gyroBiasOut->z = gyroBiasRunning.bias.z;
-
+  DEBUG_PRINT("gyroBias found: %d\n", gyroBiasRunning.isBiasValueFound);
   return gyroBiasRunning.isBiasValueFound;
 }
 #endif
@@ -859,8 +1136,8 @@ bool sensorsBmi088Bmp388ManufacturingTest(void)
   }
 
   int8_t accResult = 0;
-  bmi088_perform_accel_selftest(&accResult, &bmi088Dev);
-  if (accResult == BMI088_SELFTEST_PASS)
+  accResult = bmi08xa_perform_selftest(&bmi088Dev);
+  if (accResult == BMI08_OK)
   {
     DEBUG_PRINT("BMI088 acc self-test [OK]\n");
   }
@@ -933,12 +1210,12 @@ void sensorsBmi088Bmp388SetAccMode(accModes accMode)
   switch (accMode)
   {
     case ACC_MODE_PROPTEST:
-//      bmi088_accel_soft_reset(&bmi088Dev);
+      // bmi08a_soft_reset(&bmi088Dev);
       /* set bandwidth and range of accel (280Hz cut-off according to datasheet) */
-      bmi088Dev.accel_cfg.bw = BMI088_ACCEL_BW_NORMAL;
+      bmi088Dev.accel_cfg.bw = BMI08_ACCEL_BW_NORMAL;
       bmi088Dev.accel_cfg.range = SENSORS_BMI088_ACCEL_FS_CFG;
-      bmi088Dev.accel_cfg.odr = BMI088_ACCEL_ODR_1600_HZ;
-      if (bmi088_set_accel_meas_conf(&bmi088Dev) != BMI088_OK)
+      bmi088Dev.accel_cfg.odr = BMI08_ACCEL_ODR_1600_HZ;
+      if (bmi08a_set_meas_conf(&bmi088Dev) != BMI08_OK)
       {
         DEBUG_PRINT("ACC config [FAIL]\n");
       }
@@ -950,10 +1227,10 @@ void sensorsBmi088Bmp388SetAccMode(accModes accMode)
     case ACC_MODE_FLIGHT:
     default:
       /* set bandwidth and range of accel (145Hz cut-off according to datasheet) */
-      bmi088Dev.accel_cfg.bw = BMI088_ACCEL_BW_OSR4;
+      bmi088Dev.accel_cfg.bw = BMI08_ACCEL_BW_OSR4;
       bmi088Dev.accel_cfg.range = SENSORS_BMI088_ACCEL_FS_CFG;
-      bmi088Dev.accel_cfg.odr = BMI088_ACCEL_ODR_1600_HZ;
-      if (bmi088_set_accel_meas_conf(&bmi088Dev) != BMI088_OK)
+      bmi088Dev.accel_cfg.odr = BMI08_ACCEL_ODR_1600_HZ;
+      if (bmi08a_set_meas_conf(&bmi088Dev) != BMI08_OK)
       {
         DEBUG_PRINT("ACC config [FAIL]\n");
       }

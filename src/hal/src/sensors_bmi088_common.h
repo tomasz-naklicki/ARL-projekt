@@ -27,14 +27,22 @@
 
 #include <stdint.h>
 #include "bstdr_types.h"
+// #include "bmp3_defs.h"
 
-void sensorsBmi088_I2C_deviceInit(struct bmi088_dev *device);
-void sensorsBmi088_SPI_deviceInit(struct bmi088_dev *device);
+void sensorsBmi088_I2C_deviceInit(struct bmi08_dev *device);
+void sensorsBmi088_SPI_deviceInit(struct bmi08_dev *device);
 
-void        bmi088_ms_delay(uint32_t period);
+void        bmi088_us_delay(uint32_t period, void *intf_ptr);
 
-bstdr_ret_t bmi088_burst_read(uint8_t dev_id, uint8_t reg_addr,
-                              uint8_t *reg_data, uint16_t len);
+// bmi088_com_fptr_t bmi088_burst_read(uint8_t reg_addr, uint8_t *read_data,
+//                               uint32_t len, void *intf_ptr);
+// bmp3_read_fptr_t bmi088_burst_read(uint8_t dev_id, uint8_t reg_addr,
+                            //   uint8_t *reg_data, uint16_t len);
+BMI08_INTF_RET_TYPE bmi088_burst_read(uint8_t reg_addr, uint8_t *reg_data,
+                                     uint32_t len, void *intf_ptr);
 
-bstdr_ret_t bmi088_burst_write(uint8_t dev_id, uint8_t reg_addr,
-                               uint8_t *reg_data, uint16_t len);
+// bmp3_write_fptr_t bmi088_burst_write(uint8_t dev_id, uint8_t reg_addr,
+                            //    uint8_t *reg_data, uint16_t len);
+BMI08_INTF_RET_TYPE bmi088_burst_write(uint8_t reg_addr, const uint8_t *reg_data,
+                                      uint32_t len, void *intf_ptr);
+//  BMP3_INTF_RET_TYPE

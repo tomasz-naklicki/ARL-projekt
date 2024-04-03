@@ -54,7 +54,7 @@
 
 /* Bosch Sensortec Drivers */
 #include "bmi055.h"
-#include "bmi088.h"
+#include "bmi08x.h"
 #include "bmi160.h"
 #include "bmm150.h"
 #include "bmp280.h"
@@ -90,7 +90,7 @@
 #define SENSORS_BMI055_1G_IN_LSB        (65536 / SENSORS_BMI055_ACCEL_CFG / 2)
 
 /* BMI088 */
-#define SENSORS_BMI088_GYRO_FS_CFG      BMI088_GYRO_RANGE_2000_DPS
+#define SENSORS_BMI088_GYRO_FS_CFG      BMI08_GYRO_RANGE_2000_DPS
 #define SENSORS_BMI088_DEG_PER_LSB_CFG  (2.0f *2000.0f) / 65536.0f
 
 #define SENSORS_BMI088_ACCEL_CFG        24
