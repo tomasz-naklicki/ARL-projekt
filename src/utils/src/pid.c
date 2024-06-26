@@ -36,7 +36,7 @@ void pidInit(PidObject* pid, const float desired, const float kp,
              bool enableDFilter)
 {
   pid->error         = 0;
-  pid->prevMeasured  = 0;
+  pid->prevError     = 0;
   pid->integ         = 0;
   pid->deriv         = 0;
   pid->desired       = desired;
@@ -66,7 +66,7 @@ float pidUpdate(PidObject* pid, const float measured, const bool updateError)
   pid->outP = pid->kp * pid->error;
   output += pid->outP;
 
-  float deriv = -(measured - pid->prevMeasured) / pid->dt;
+  float deriv = (pid->error - pid->prevError) / pid->dt;
   
   #if CONFIG_CONTROLLER_PID_FILTER_ALL
     pid->deriv = deriv;
@@ -117,7 +117,7 @@ float pidUpdate(PidObject* pid, const float measured, const bool updateError)
     output = constrain(output, -pid->outputLimit, pid->outputLimit);
   }
 
-  pid->prevMeasured = measured;
+  pid->prevError = pid->error;
 
   return output;
 }
@@ -129,7 +129,7 @@ void pidSetIntegralLimit(PidObject* pid, const float limit) {
 void pidReset(PidObject* pid)
 {
   pid->error        = 0;
-  pid->prevMeasured = 0;
+  pid->prevError    = 0;
   pid->integ        = 0;
   pid->deriv        = 0;
 }
