@@ -73,6 +73,8 @@
 #include "i2cdev.h"
 #include "autoconf.h"
 #include "vcp_esc_passthrough.h"
+#include "bh1750.h"
+
 #if CONFIG_ENABLE_CPX
   #include "cpxlink.h"
 #endif
@@ -213,6 +215,9 @@ void systemTask(void *arg)
   soundInit();
   crtpMemInit();
 
+  bh1750TaskInit();
+  
+
 #ifdef PROXIMITY_ENABLED
   proximityInit();
 #endif
@@ -287,6 +292,10 @@ void systemTask(void *arg)
   if (peerLocalizationTest() == false) {
     pass = false;
     DEBUG_PRINT("peerLocalization [FAIL]\n");
+  }
+  if (bh1750TaskTest() == false) {
+    pass = false;
+    DEBUG_PRINT("bh1750 [FAIL]\n");
   }
 
   //Start the firmware
